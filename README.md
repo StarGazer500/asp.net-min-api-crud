@@ -4,10 +4,10 @@ Feature-based architecture with Ports and Adapters, using **Minimal APIs** as th
 
 ## 1. Overview
 
-- **Features** (`Features/`) group code by business capability (Products, Orders, ...). Each feature owns its endpoints, service and DTOs.
+- **Features** (`Features/`) group code by business capability (Products, Orders, ...). Each feature owns its endpoints, service, DTOs and entity.
 - **Ports** (`Shared/Abstractions/`) are interfaces for external systems (file storage, email).
 - **Adapters** (`Adapters/`) implement the ports (S3, SMTP). Features never reference them.
-- **Core** (`Core/`) is app plumbing: config, DbContext and entities, logging, error handling.
+- **Core** (`Core/`) is app plumbing: config, DbContext, logging, error handling.
 - **Shared** (`Shared/`) holds ports, base types and exceptions used by several features.
 
 ```
@@ -54,7 +54,7 @@ Create the folders (delete the template's sample weather endpoint first):
 ```bash
 mkdir -p Adapters/S3 Adapters/Email Adapters/Local \
          Features/Products \
-         Core/Config Core/Data/Entities Core/Errors Core/Logging \
+         Core/Config Core/Data Core/Errors Core/Logging \
          Shared/Abstractions Shared/Exceptions
 ```
 
@@ -70,14 +70,13 @@ src/MyProject/
     Products/
       ProductsEndpoints.cs     (the "router")
       ProductService.cs
-      ProductDto.cs            (request/response DTOs + validation attributes)
+      ProductDtos.cs           (all request/response DTOs for the feature)
+      ProductEntity.cs         (database entity)
     Orders/
       ...
   Core/
     Config/
-    Data/                  AppDbContext.cs
-      Entities/            Product.cs, ...
-      Migrations/
+    Data/                  AppDbContext.cs, Migrations/
     Errors/                GlobalExceptionHandler.cs
     Logging/
   Shared/
@@ -92,10 +91,10 @@ src/MyProject/
 
 | Folder | Contains | Test |
 |---|---|---|
-| `Features/` | Router, service and DTOs per business capability | "Is this specific to one business capability?" |
+| `Features/` | Router, service, DTOs and entity per business capability | "Is this specific to one business capability?" |
 | `Shared/` | Ports (interfaces), base entity, exceptions | "Do several features depend on this?" |
 | `Adapters/` | Implementations of ports for external systems | "Could I swap this for another provider or a fake?" |
-| `Core/` | Config, DbContext, entities, logging, error handling | "Does the app need this to run, regardless of vendor?" |
+| `Core/` | Config, DbContext, logging, error handling | "Does the app need this to run, regardless of vendor?" |
 
 ## 7. Dependency rules
 
@@ -103,7 +102,7 @@ src/MyProject/
 2. Adapters implement ports and never reference features.
 3. A feature only writes to its own tables. Cross-feature changes go through the other feature's service (or a small interface it exposes).
 4. Routers (controllers/endpoints) only parse the request, call a service, and map the result to HTTP. No business logic, no `DbContext` calls.
-5. API responses use **DTOs**, never entities.
+5. The API takes **request DTOs** (`CreateProductRequest`) and returns **response DTOs** (`ProductResponse`), never entities.
 6. Interfaces live where the consumer can see them, never next to the adapter implementation.
 7. Interfaces describe what the app needs, not what the vendor offers. No SDK types in an interface.
 
@@ -178,43 +177,19 @@ public class StorageException(string message) : AppException(message);
 ### 8.3 Core
 
 ```csharp
-// Core/Data/Entities/Product.cs
-using System.ComponentModel.DataAnnotations;
-using System.ComponentModel.DataAnnotations.Schema;
-using Microsoft.EntityFrameworkCore;
-using MyProject.Shared;
-
-namespace MyProject.Core.Data.Entities;
-
-[Table("products")]
-public class Product : BaseEntity
-{
-    [MaxLength(200)]
-    public string Name { get; set; } = "";
-
-    [Precision(18, 2)]
-    public decimal Price { get; set; }
-
-    public string? ImageKey { get; set; }
-}
-```
-
-Table and column settings are attributes on the entity. A non-nullable `string` is already `NOT NULL`, so `Name` needs no `[Required]`.
-
-```csharp
 // Core/Data/AppDbContext.cs
 using Microsoft.EntityFrameworkCore;
-using MyProject.Core.Data.Entities;
+using MyProject.Features.Products;
 
 namespace MyProject.Core.Data;
 
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
-    public DbSet<Product> Products => Set<Product>();
+    public DbSet<ProductEntity> Products => Set<ProductEntity>();
 }
 ```
 
-Add one `DbSet` per entity. EF Core only maps entities it can reach from the `DbContext`.
+Add one `DbSet` per entity. EF Core only maps entities it can reach from the `DbContext`. The entities themselves live in their feature folder (see 8.5).
 
 ```csharp
 // Core/Errors/GlobalExceptionHandler.cs
@@ -378,7 +353,31 @@ internal class LocalFileStorage(IWebHostEnvironment env) : IFileStorage
 
 `Program.cs` picks the adapter (see 8.7). Swapping providers is a one-line change there, for example `AddScoped<IFileStorage, AzureBlobFileStorage>()`.
 
-### 8.5 Feature: Products (service)
+### 8.5 Feature: Products (entity, service)
+
+```csharp
+// Features/Products/ProductEntity.cs
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+using Microsoft.EntityFrameworkCore;
+using MyProject.Shared;
+
+namespace MyProject.Features.Products;
+
+[Table("products")]
+public class ProductEntity : BaseEntity
+{
+    [MaxLength(200)]
+    public string Name { get; set; } = "";
+
+    [Precision(18, 2)]
+    public decimal Price { get; set; }
+
+    public string? ImageKey { get; set; }
+}
+```
+
+Table and column settings are attributes on the entity. A non-nullable `string` is already `NOT NULL`, so `Name` needs no `[Required]`. The `Entity` suffix keeps the database class apart from `ProductResponse`, and `[Table("products")]` keeps the table name independent of the class name.
 
 The service uses `AppDbContext` directly. EF Core's `DbContext` already is a repository and unit of work, so a wrapper adds code without adding a seam you need.
 
@@ -386,7 +385,6 @@ The service uses `AppDbContext` directly. EF Core's `DbContext` already is a rep
 // Features/Products/ProductService.cs
 using Microsoft.EntityFrameworkCore;
 using MyProject.Core.Data;
-using MyProject.Core.Data.Entities;
 using MyProject.Shared.Abstractions;
 using MyProject.Shared.Exceptions;
 
@@ -394,30 +392,40 @@ namespace MyProject.Features.Products;
 
 public class ProductService(AppDbContext db, IFileStorage storage)
 {
-    public async Task<ProductDto> GetAsync(int id, CancellationToken ct = default) =>
-        ToDto(await FindAsync(id, ct));
+    public async Task<ProductResponse> GetAsync(int id, CancellationToken ct = default) =>
+        ToResponse(await FindAsync(id, ct));
 
-    public Task<List<ProductDto>> ListAsync(CancellationToken ct = default) =>
+    public Task<List<ProductResponse>> ListAsync(CancellationToken ct = default) =>
         db.Products.AsNoTracking()
-            .Select(p => new ProductDto(p.Id, p.Name, p.Price, p.ImageKey))
+            .Select(p => ToResponse(p))
             .ToListAsync(ct);
 
-    public async Task<ProductDto> CreateAsync(CreateProductDto dto, CancellationToken ct = default)
+    public async Task<ProductResponse> CreateAsync(CreateProductRequest request, CancellationToken ct = default)
     {
-        var product = new Product { Name = dto.Name, Price = dto.Price };
+        var product = new ProductEntity { Name = request.Name, Price = request.Price };
         db.Products.Add(product);
         await db.SaveChangesAsync(ct);
-        return ToDto(product);
+        return ToResponse(product);
     }
 
-    public async Task<ProductDto> UploadImageAsync(int id, Stream image, string fileName, CancellationToken ct = default)
+    public async Task<ProductResponse> UploadImageAsync(int id, Stream image, string fileName, CancellationToken ct = default)
     {
         var product = await FindAsync(id, ct);
 
         product.ImageKey = await storage.UploadAsync(image, $"products/{id}/{fileName}", ct);
         product.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
-        return ToDto(product);
+        return ToResponse(product);
+    }
+
+    public async Task<(Stream Content, string FileName)> GetImageAsync(int id, CancellationToken ct = default)
+    {
+        var product = await FindAsync(id, ct);
+        var image = product.ImageKey is null ? null : await storage.DownloadAsync(product.ImageKey, ct);
+
+        return image is null
+            ? throw new NotFoundException($"Product {id} has no image.")
+            : (image, Path.GetFileName(product.ImageKey!));
     }
 
     public async Task DeleteAsync(int id, CancellationToken ct = default)
@@ -426,37 +434,51 @@ public class ProductService(AppDbContext db, IFileStorage storage)
         await db.SaveChangesAsync(ct);
     }
 
-    private async Task<Product> FindAsync(int id, CancellationToken ct) =>
+    private async Task<ProductEntity> FindAsync(int id, CancellationToken ct) =>
         await db.Products.FindAsync([id], ct)
             ?? throw new NotFoundException($"Product {id} was not found.");
 
-    private static ProductDto ToDto(Product p) => new(p.Id, p.Name, p.Price, p.ImageKey);
+    // ImageUrl points at the GET /api/products/{id}/image endpoint, never at the internal storage key.
+    private static ProductResponse ToResponse(ProductEntity p) =>
+        new(p.Id, p.Name, p.Price, p.ImageKey is null ? null : $"/api/products/{p.Id}/image");
 }
 ```
 
-### 8.6 Feature: Products (DTOs, validation, router)
+### 8.6 Feature: Products (request/response DTOs, validation, router)
+
+DTOs follow the request/response naming style: `<Action><Name>Request` for input, `<Name>Response` for output. All DTOs for a feature live together in one `<Name>Dtos.cs` file, so the whole API contract is visible in one place.
 
 ```csharp
-// Features/Products/ProductDto.cs
+// Features/Products/ProductDtos.cs
 using System.ComponentModel.DataAnnotations;
 
 namespace MyProject.Features.Products;
 
-public record ProductDto(int Id, string Name, decimal Price, string? ImageKey);
+// Requests (input)
 
-public record CreateProductDto(
+public record CreateProductRequest(
     [Required, MaxLength(200)] string Name,
     [Range(0, double.MaxValue, ErrorMessage = "Price must be 0 or more.")] decimal Price);
+
+// Responses (output)
+
+public record ProductResponse(int Id, string Name, decimal Price, string? ImageUrl);
 ```
+
+`ProductResponse` exposes `ImageUrl` (`/api/products/{id}/image`), not the entity's `ImageKey`. The key is an internal storage path the client can't use, and keeping it out of the API means you can change storage layout without breaking clients.
 
 Validation is built into .NET 10. Call `builder.Services.AddValidation()` once in `Program.cs`, and every endpoint parameter with DataAnnotations attributes is checked before the handler runs. Invalid input returns a 400 `ValidationProblem` with the errors per field. No filter or extra package is needed.
 
 ```csharp
 // Features/Products/ProductsEndpoints.cs   <- the "router"
+using Microsoft.AspNetCore.StaticFiles;
+
 namespace MyProject.Features.Products;
 
 public static class ProductsEndpoints
 {
+    private static readonly FileExtensionContentTypeProvider ContentTypes = new();
+
     public static IEndpointRouteBuilder MapProducts(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/products").WithTags("Products");
@@ -468,9 +490,9 @@ public static class ProductsEndpoints
             TypedResults.Ok(await service.GetAsync(id, ct)))
             .WithName("GetProduct");
 
-        group.MapPost("/", async (CreateProductDto dto, ProductService service, CancellationToken ct) =>
+        group.MapPost("/", async (CreateProductRequest request, ProductService service, CancellationToken ct) =>
         {
-            var created = await service.CreateAsync(dto, ct);
+            var created = await service.CreateAsync(request, ct);
             return TypedResults.CreatedAtRoute(created, "GetProduct", new { id = created.Id });
         });
 
@@ -480,6 +502,13 @@ public static class ProductsEndpoints
             return TypedResults.Ok(await service.UploadImageAsync(id, stream, file.FileName, ct));
         })
         .DisableAntiforgery();   // required for IFormFile in minimal APIs (.NET 8+); secure this route with auth
+
+        group.MapGet("/{id:int}/image", async (int id, ProductService service, CancellationToken ct) =>
+        {
+            var (content, fileName) = await service.GetImageAsync(id, ct);
+            var contentType = ContentTypes.TryGetContentType(fileName, out var type) ? type : "application/octet-stream";
+            return TypedResults.Stream(content, contentType);
+        });
 
         group.MapDelete("/{id:int}", async (int id, ProductService service, CancellationToken ct) =>
         {
@@ -602,10 +631,10 @@ In VS Code, install the **REST Client** extension and keep requests in a `reques
 
 ## 11. Adding a new feature (checklist)
 
-1. Add `Core/Data/Entities/<Name>.cs` (inheriting `BaseEntity`, with attributes like `[MaxLength]`) and a `DbSet<<Name>>` in `AppDbContext`.
-2. Create `Features/<Name>s/`.
+1. Create `Features/<Name>s/`.
+2. Add `<Name>Entity.cs` there (inheriting `BaseEntity`, with `[Table]` and attributes like `[MaxLength]`) and a `DbSet<<Name>Entity>` in `AppDbContext`.
 3. Add `<Name>Service` using `AppDbContext`, with the business logic. Throw exceptions from `Shared/Exceptions`.
-4. Add DTOs with validation attributes. Never return entities.
+4. Add `<Name>Dtos.cs` with `<Action><Name>Request` DTOs (with validation attributes) and a `<Name>Response` DTO. Never return entities.
 5. Add the router file (`<Name>sEndpoints.cs` with `Map<Name>s()`).
 6. Register the service and map the endpoints in `Program.cs`.
 7. Add a migration and update the database.
@@ -662,11 +691,11 @@ public class ProductServiceTests
     public ProductServiceTests() => _service = new ProductService(_db, _storage);
 
     [Fact]
-    public async Task CreateAsync_returns_dto_with_new_id()
+    public async Task CreateAsync_returns_response_with_new_id()
     {
-        var dto = await _service.CreateAsync(new CreateProductDto("Keyboard", 49.99m));
+        var response = await _service.CreateAsync(new CreateProductRequest("Keyboard", 49.99m));
 
-        Assert.Equal(1, dto.Id);
+        Assert.Equal(1, response.Id);
         Assert.Single(_db.Products);
     }
 }
@@ -696,9 +725,9 @@ When the project grows, promote `Adapters`, `Core` and `Shared` to class librari
 
 ## 14. Conventions
 
-- Folders and namespaces mirror each other (`MyProject.Features.Products`, `MyProject.Core.Data.Entities`).
+- Folders and namespaces mirror each other (`MyProject.Features.Products`, `MyProject.Core.Data`).
 - Async methods end in `Async` and accept a `CancellationToken`.
-- One public type per file, named after the file.
+- One public type per file, named after the file. Exception: a feature's DTOs share one `<Name>Dtos.cs` file.
 - Adapters are `internal`; services and routers are `public`.
 - No business logic in routers, no HTTP concerns in services.
 - Do not wrap things that are already abstractions (`ILogger`) or that you will never swap.

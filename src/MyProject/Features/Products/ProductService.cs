@@ -1,6 +1,5 @@
 using Microsoft.EntityFrameworkCore;
 using MyProject.Core.Data;
-using MyProject.Core.Data.Entities;
 using MyProject.Shared.Abstractions;
 using MyProject.Shared.Exceptions;
 
@@ -8,30 +7,40 @@ namespace MyProject.Features.Products;
 
 public class ProductService(AppDbContext db, IFileStorage storage)
 {
-    public async Task<ProductDto> GetAsync(int id, CancellationToken ct = default) =>
-        ToDto(await FindAsync(id, ct));
+    public async Task<ProductResponse> GetAsync(int id, CancellationToken ct = default) =>
+        ToResponse(await FindAsync(id, ct));
 
-    public Task<List<ProductDto>> ListAsync(CancellationToken ct = default) =>
+    public Task<List<ProductResponse>> ListAsync(CancellationToken ct = default) =>
         db.Products.AsNoTracking()
-            .Select(p => new ProductDto(p.Id, p.Name, p.Price, p.ImageKey))
+            .Select(p => ToResponse(p))
             .ToListAsync(ct);
 
-    public async Task<ProductDto> CreateAsync(CreateProductDto dto, CancellationToken ct = default)
+    public async Task<ProductResponse> CreateAsync(CreateProductRequest request, CancellationToken ct = default)
     {
-        var product = new Product { Name = dto.Name, Price = dto.Price };
+        var product = new ProductEntity { Name = request.Name, Price = request.Price };
         db.Products.Add(product);
         await db.SaveChangesAsync(ct);
-        return ToDto(product);
+        return ToResponse(product);
     }
 
-    public async Task<ProductDto> UploadImageAsync(int id, Stream image, string fileName, CancellationToken ct = default)
+    public async Task<ProductResponse> UploadImageAsync(int id, Stream image, string fileName, CancellationToken ct = default)
     {
         var product = await FindAsync(id, ct);
 
         product.ImageKey = await storage.UploadAsync(image, $"products/{id}/{fileName}", ct);
         product.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
-        return ToDto(product);
+        return ToResponse(product);
+    }
+
+    public async Task<(Stream Content, string FileName)> GetImageAsync(int id, CancellationToken ct = default)
+    {
+        var product = await FindAsync(id, ct);
+        var image = product.ImageKey is null ? null : await storage.DownloadAsync(product.ImageKey, ct);
+
+        return image is null
+            ? throw new NotFoundException($"Product {id} has no image.")
+            : (image, Path.GetFileName(product.ImageKey!));
     }
 
     public async Task DeleteAsync(int id, CancellationToken ct = default)
@@ -40,9 +49,11 @@ public class ProductService(AppDbContext db, IFileStorage storage)
         await db.SaveChangesAsync(ct);
     }
 
-    private async Task<Product> FindAsync(int id, CancellationToken ct) =>
+    private async Task<ProductEntity> FindAsync(int id, CancellationToken ct) =>
         await db.Products.FindAsync([id], ct)
             ?? throw new NotFoundException($"Product {id} was not found.");
 
-    private static ProductDto ToDto(Product p) => new(p.Id, p.Name, p.Price, p.ImageKey);
+    // ImageUrl points at the GET /api/products/{id}/image endpoint, never at the internal storage key.
+    private static ProductResponse ToResponse(ProductEntity p) =>
+        new(p.Id, p.Name, p.Price, p.ImageKey is null ? null : $"/api/products/{p.Id}/image");
 }

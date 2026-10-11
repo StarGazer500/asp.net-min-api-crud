@@ -17,12 +17,12 @@ public class ProductServiceTests
     public ProductServiceTests() => _service = new ProductService(_db, _storage);
 
     [Fact]
-    public async Task CreateAsync_returns_dto_with_new_id()
+    public async Task CreateAsync_returns_response_with_new_id()
     {
-        var dto = await _service.CreateAsync(new CreateProductDto("Keyboard", 49.99m));
+        var response = await _service.CreateAsync(new CreateProductRequest("Keyboard", 49.99m));
 
-        Assert.Equal(1, dto.Id);
-        Assert.Equal("Keyboard", dto.Name);
+        Assert.Equal(1, response.Id);
+        Assert.Equal("Keyboard", response.Name);
         Assert.Single(_db.Products);
     }
 
@@ -35,18 +35,40 @@ public class ProductServiceTests
     [Fact]
     public async Task UploadImageAsync_stores_file_and_sets_image_key()
     {
-        var created = await _service.CreateAsync(new CreateProductDto("Mouse", 19m));
+        var created = await _service.CreateAsync(new CreateProductRequest("Mouse", 19m));
 
-        var dto = await _service.UploadImageAsync(created.Id, new MemoryStream([1, 2, 3]), "photo.png");
+        var response = await _service.UploadImageAsync(created.Id, new MemoryStream([1, 2, 3]), "photo.png");
 
-        Assert.Equal($"products/{created.Id}/photo.png", dto.ImageKey);
-        Assert.True(_storage.Files.ContainsKey(dto.ImageKey!));
+        Assert.Equal($"/api/products/{created.Id}/image", response.ImageUrl);
+        Assert.True(_storage.Files.ContainsKey($"products/{created.Id}/photo.png"));
+    }
+
+    [Fact]
+    public async Task GetImageAsync_returns_uploaded_file()
+    {
+        var created = await _service.CreateAsync(new CreateProductRequest("Mouse", 19m));
+        await _service.UploadImageAsync(created.Id, new MemoryStream([1, 2, 3]), "photo.png");
+
+        var (content, fileName) = await _service.GetImageAsync(created.Id);
+
+        using var ms = new MemoryStream();
+        await content.CopyToAsync(ms);
+        Assert.Equal([1, 2, 3], ms.ToArray());
+        Assert.Equal("photo.png", fileName);
+    }
+
+    [Fact]
+    public async Task GetImageAsync_throws_NotFound_when_product_has_no_image()
+    {
+        var created = await _service.CreateAsync(new CreateProductRequest("Mouse", 19m));
+
+        await Assert.ThrowsAsync<NotFoundException>(() => _service.GetImageAsync(created.Id));
     }
 
     [Fact]
     public async Task DeleteAsync_removes_product()
     {
-        var created = await _service.CreateAsync(new CreateProductDto("Monitor", 199m));
+        var created = await _service.CreateAsync(new CreateProductRequest("Monitor", 199m));
 
         await _service.DeleteAsync(created.Id);
 

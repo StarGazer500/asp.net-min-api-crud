@@ -250,3 +250,4 @@
 /home/rbgh-officer-server/Desktop/LEARN_DOTNET_MINIMAL_API/MyProject/src/MyProject/obj/Debug/net10.0/MyProject.pdb
 /home/rbgh-officer-server/Desktop/LEARN_DOTNET_MINIMAL_API/MyProject/src/MyProject/obj/Debug/net10.0/MyProject.genruntimeconfig.cache
 /home/rbgh-officer-server/Desktop/LEARN_DOTNET_MINIMAL_API/MyProject/src/MyProject/obj/Debug/net10.0/ref/MyProject.dll
+/home/rbgh-officer-server/Desktop/LEARN_DOTNET_MINIMAL_API/MyProject/src/MyProject/obj/Debug/net10.0/MyProject.sourcelink.json

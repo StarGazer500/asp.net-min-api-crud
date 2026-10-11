@@ -25,7 +25,7 @@ namespace MyProject.Core.Data.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-            modelBuilder.Entity("MyProject.Core.Data.Entities.Product", b =>
+            modelBuilder.Entity("MyProject.Features.Products.ProductEntity", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
