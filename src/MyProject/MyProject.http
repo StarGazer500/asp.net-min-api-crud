@@ -1,0 +1,38 @@
+@MyProject_HostAddress = http://localhost:5280
+
+### List all products
+GET {{MyProject_HostAddress}}/api/products
+Accept: application/json
+
+### Create a product (201 Created)
+# @name create
+POST {{MyProject_HostAddress}}/api/products
+Content-Type: application/json
+
+{ "name": "Keyboard", "price": 49.99 }
+
+### Get the product just created (uses the id from the response above)
+GET {{MyProject_HostAddress}}/api/products/{{create.response.body.$.id}}
+
+### Upload an image for it (saved to uploads/ in Development)
+POST {{MyProject_HostAddress}}/api/products/{{create.response.body.$.id}}/image
+Content-Type: multipart/form-data; boundary=Boundary
+
+--Boundary
+Content-Disposition: form-data; name="file"; filename="hello.txt"
+Content-Type: text/plain
+
+Pretend this is an image.
+--Boundary--
+
+### Validation error (400): empty name, negative price
+POST {{MyProject_HostAddress}}/api/products
+Content-Type: application/json
+
+{ "name": "", "price": -1 }
+
+### Not found (404)
+GET {{MyProject_HostAddress}}/api/products/999999
+
+### Delete the product just created (204 No Content)
+DELETE {{MyProject_HostAddress}}/api/products/{{create.response.body.$.id}}
